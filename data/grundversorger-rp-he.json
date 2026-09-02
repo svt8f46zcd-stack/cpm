@@ -1,0 +1,10 @@
+{
+  "meta": {
+    "beschreibung": "Grundversorger-Datenbank für Rheinland-Pfalz und Hessen. Datenstruktur folgt §36 EnWG Feststellungen der jeweiligen Netzbetreiber.",
+    "gueltig_von": "2025-01-01",
+    "gueltig_bis": "2027-12-31",
+    "stand": "2026-09-02",
+    "hinweis": "Diese Liste ist eine Auswahl verifizierter, offiziell veröffentlichter Netzgebiete. Sie ist NICHT vollständig für alle Orte in RP/HE."
+  },
+  "einträge": []
+}
