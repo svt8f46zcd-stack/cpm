@@ -26,12 +26,12 @@ function statusOf(tariff) {
 
 function isVisibleAndVerified(tariff) {
   const status = statusOf(tariff);
-  return status !== 'hidden' && VERIFICATION_RANK[status] > 0;
+  return status !== 'hidden' && (VERIFICATION_RANK[status] ?? 0) >= 2;
 }
 
 function inConsumptionRange(tariff, consumption) {
-  const min = num(tariff.minConsumptionKwh);
-  const max = num(tariff.maxConsumptionKwh);
+  const min = num(tariff.minConsumptionKwh ?? tariff.min_consumption_kwh);
+  const max = num(tariff.maxConsumptionKwh ?? tariff.max_consumption_kwh);
   if (min !== null && consumption < min) return false;
   if (max !== null && consumption > max) return false;
   return true;
@@ -48,11 +48,21 @@ function noticePeriodDays(tariff) {
   return null;
 }
 
+function hasValidSourceAndDate(tariff) {
+  const source = tariff.quelle ?? tariff.source;
+  const date = tariff.datenstand ?? tariff.data_as_of ?? tariff.dataAsOf;
+  return Boolean(source && date);
+}
+
 export function validateTariffLegalFields(tariff) {
   const errors = [];
   const warnings = [];
   const noticeDays = noticePeriodDays(tariff);
   const grundversorgung = tariff.grundversorgung === true || tariff.tariffType === 'grundversorgung';
+
+  if (!hasValidSourceAndDate(tariff)) {
+    warnings.push('Quelle und Datenstand fehlen; Tarif darf nicht als vollständig verifiziert dargestellt werden.');
+  }
 
   if (noticeDays !== null && noticeDays > 30 && !grundversorgung) {
     errors.push('Kündigungsfrist vor Ablauf der Erstlaufzeit darf bei Verbraucherverträgen nicht länger als einen Monat sein.');
@@ -62,14 +72,18 @@ export function validateTariffLegalFields(tariff) {
   const anytime = tariff.verlaengerung_kuendbar_jederzeit;
   const extensionNoticeDays = num(tariff.verlaengerung_kuendigungsfrist_tage);
   if (extensionMonths > 0 && anytime !== true) {
-    errors.push('Verlängerung muss als unbestimmte Laufzeit mit jederzeitiger Kündbarkeit innerhalb der gesetzlichen Höchstfrist abgebildet werden oder vor Veröffentlichung gesperrt werden.');
+    errors.push('Eine feste Vertragsverlängerung ist nicht automatisch zulässig. Ohne jederzeitige Kündbarkeit mit höchstens einem Monat Frist muss der Tarif vor Veröffentlichung gesperrt werden.');
   }
   if (extensionNoticeDays !== null && extensionNoticeDays > 30) {
     errors.push('Kündigungsfrist während der Verlängerung darf nicht länger als einen Monat sein.');
   }
 
   if (tariff.preisgarantie_ausnahmen && !tariff.preisgarantie_ausnahmen_quelle) {
-    warnings.push('Preisgarantie-Ausnahmen müssen aus den konkreten Vertragsbedingungen des Anbieters belegt werden.');
+    errors.push('Preisgarantie-Ausnahmen müssen aus den konkreten Vertragsbedingungen des Anbieters belegt werden.');
+  }
+
+  if (grundversorgung && noticeDays !== null && noticeDays !== 14) {
+    errors.push('Grundversorgung muss mit 14 Tagen Kündigungsfrist abgebildet werden.');
   }
 
   return {
@@ -90,17 +104,18 @@ export function calculateAnnualCosts(tariff, consumption, options = {}) {
   const basePrice = num(tariff.basePriceAnnual ?? tariff.electricityBasePriceAnnual ?? tariff.gasBasePriceAnnual) ?? 0;
   if (workPrice === null) throw new Error('Arbeitspreis des Tarifs fehlt.');
 
-  let energyCost = workPrice / 100 * kwh;
+  let billableKwh = kwh;
   if (energyType === 'gas' && tariff.consumptionUnit === 'm3') {
     const conversion = num(tariff.m3ToKwhFactor);
     if (conversion === null || conversion <= 0) throw new Error('Für Gas mit m³-Verbrauch fehlt ein gültiger Umrechnungsfaktor.');
-    energyCost = workPrice / 100 * kwh * conversion;
+    billableKwh = kwh * conversion;
   }
 
+  const energyCost = workPrice / 100 * billableKwh;
   const recurring = basePrice + energyCost;
-  const newCustomerBonus = num(tariff.newCustomerBonus) ?? 0;
-  const instantBonus = num(tariff.instantBonus) ?? 0;
-  const oneTimeBonus = Math.max(0, newCustomerBonus) + Math.max(0, instantBonus);
+  const newCustomerBonus = Math.max(0, num(tariff.newCustomerBonus ?? tariff.neukundenbonus) ?? 0);
+  const instantBonus = Math.max(0, num(tariff.instantBonus ?? tariff.sofortbonus) ?? 0);
+  const oneTimeBonus = newCustomerBonus + instantBonus;
 
   const firstYearCost = Math.max(0, recurring - oneTimeBonus);
   const ongoingYearCost = recurring;
@@ -109,6 +124,7 @@ export function calculateAnnualCosts(tariff, consumption, options = {}) {
   return {
     energyType,
     consumptionKwh: kwh,
+    billableKwh: round2(billableKwh),
     workPriceCtKwh: workPrice,
     basePriceAnnual: basePrice,
     recurringAnnualCost: round2(recurring),
@@ -131,15 +147,14 @@ export function filterAndRankTariffs(tariffs, input) {
   const matches = tariffs
     .filter(isVisibleAndVerified)
     .filter(t => normalizeEnergyType(t.energyType || t.energy_type || (t.gasWorkPrice != null ? 'gas' : 'electricity')) === energyType)
-    .filter(t => String(t.postalArea || t.postalCode || '').split(/[,;\s]+/).includes(postalCode) || String(t.postalArea || t.postalCode || '') === postalCode)
+    .filter(t => String(t.postalArea || t.postalCode || '').split(/[,;\s]+/).includes(postalCode))
     .filter(t => inConsumptionRange(t, consumption))
     .map(t => {
       const costs = calculateAnnualCosts(t, consumption);
-      const legal = costs.legalValidation;
       return {
         ...t,
         costs,
-        legalValidation: legal,
+        legalValidation: costs.legalValidation,
         verificationRank: VERIFICATION_RANK[statusOf(t)] ?? 0,
       };
     })
@@ -152,7 +167,7 @@ export function filterAndRankTariffs(tariffs, input) {
 export function buildComparisonSummary(currentTariff, selectedTariff, consumption) {
   if (!selectedTariff) return null;
   const newCosts = selectedTariff.costs || calculateAnnualCosts(selectedTariff, consumption);
-  const currentCosts = currentTariff ? calculateAnnualCosts(currentTariff, consumption) : null;
+  const currentCosts = currentTariff ? calculateAnnualCosts(currentTariff, consumption, { includeBonus: false }) : null;
 
   return {
     current: currentCosts,
