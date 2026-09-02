@@ -1,5 +1,6 @@
 {
   "rewrites": [
-    { "source": "/api/price-estimate", "destination": "/api/price-estimate.js" }
+    { "source": "/api/price-estimate", "destination": "/api/price-estimate.js" },
+    { "source": "/api/compare", "destination": "/api/compare.js" }
   ]
 }
